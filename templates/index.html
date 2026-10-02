@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anypoint MQ Stats</title>
+<style>
+  :root{
+    --bg:#f6f7f4; --panel:#ffffff; --ink:#1d2733; --muted:#66717d;
+    --line:#e3e6e0; --accent:#0f62fe; --err:#c94f3d; --ok:#2e8b57;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:"Segoe UI",system-ui,-apple-system,sans-serif;
+       display:flex;justify-content:center;padding:40px 20px}
+  .mono{font-family:"SFMono-Regular",Consolas,"Courier New",monospace}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+        padding:30px 34px;max-width:620px;width:100%}
+  h1{margin:0 0 6px;font-size:1.3rem}
+  p.sub{margin:0 0 26px;color:var(--muted);font-size:.9rem}
+  label{display:block;font-size:.82rem;font-weight:600;margin:16px 0 5px;color:var(--ink)}
+  label .hint{font-weight:400;color:var(--muted);margin-left:4px}
+  input[type=text],input[type=password],input[type=datetime-local],select{
+    width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;
+    font-size:.92rem;background:#fff;color:var(--ink)}
+  input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .checkbox{display:flex;align-items:center;gap:8px;margin-top:18px}
+  .checkbox input{width:auto}
+  .checkbox label{margin:0;font-weight:500}
+  button{margin-top:26px;width:100%;padding:12px;border:none;border-radius:8px;
+         background:var(--accent);color:#fff;font-size:.95rem;font-weight:600;
+         cursor:pointer}
+  button:disabled{opacity:.55;cursor:default}
+  button.secondary{background:#fff;color:var(--ink);border:1px solid var(--line);
+                   margin-top:10px}
+  .status{margin-top:18px;padding:14px 16px;border-radius:8px;background:#f0f2ee;
+          font-size:.85rem;display:none}
+  .status.show{display:block}
+  .status .stage{font-weight:600;text-transform:capitalize}
+  .status.error{background:#fbeae7;color:var(--err)}
+  .status.done{background:#eaf5ee;color:var(--ok)}
+  .spinner{display:inline-block;width:11px;height:11px;border-radius:50%;
+           border:2px solid var(--accent);border-top-color:transparent;
+           animation:spin .7s linear infinite;margin-right:8px;vertical-align:-1px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .existing{margin-top:22px;padding-top:20px;border-top:1px solid var(--line)}
+  .existing a{color:var(--accent);font-weight:600;text-decoration:none}
+  details{margin-top:18px}
+  summary{cursor:pointer;font-size:.82rem;color:var(--muted)}
+  details .row2{margin-top:12px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Anypoint MQ · Environment Stats</h1>
+  <p class="sub">Pull queue and exchange statistics for one environment, then view
+     the dashboard.</p>
+
+  {% if no_data_notice %}
+  <div class="status show error">No data fetched yet. Run a fetch below, or load the sample.</div>
+  {% endif %}
+
+  <form id="fetchForm">
+    <div class="row2">
+      <div>
+        <label for="org_id">Organization ID</label>
+        <input type="text" id="org_id" name="org_id" required placeholder="org UUID">
+      </div>
+      <div>
+        <label for="env_id">Environment ID</label>
+        <input type="text" id="env_id" name="env_id" required placeholder="env UUID">
+      </div>
+    </div>
+
+    <div class="row2">
+      <div>
+        <label for="region">Region</label>
+        <input type="text" id="region" name="region" required placeholder="e.g. us-east-1">
+      </div>
+      <div>
+        <label for="period">Granularity</label>
+        <select id="period" name="period">
+          {% for p in periods %}
+          <option value="{{ p }}" {{ "selected" if p == "hour" else "" }}>{{ p }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <label for="client_id">Client ID <span class="hint">(or set ANYPOINT_CLIENT_ID)</span></label>
+    <input type="text" id="client_id" name="client_id" value="{{ env_client_id }}"
+           placeholder="Connected App client ID">
+
+    <label for="client_secret">Client Secret <span class="hint">(or set ANYPOINT_CLIENT_SECRET)</span></label>
+    <input type="password" id="client_secret" name="client_secret" placeholder="Connected App secret">
+
+    <div class="checkbox">
+      <input type="checkbox" id="include_exchanges" name="include_exchanges">
+      <label for="include_exchanges">Include message exchanges</label>
+    </div>
+
+    <details>
+      <summary>Custom time window (optional, defaults by granularity)</summary>
+      <div class="row2">
+        <div>
+          <label for="start">Start (UTC)</label>
+          <input type="datetime-local" id="start" name="start_local">
+        </div>
+        <div>
+          <label for="end">End (UTC)</label>
+          <input type="datetime-local" id="end" name="end_local">
+        </div>
+      </div>
+    </details>
+
+    <button type="submit" id="submitBtn">Fetch stats</button>
+  </form>
+
+  <div id="status" class="status"></div>
+
+  <button type="button" class="secondary" id="sampleBtn">Load sample data instead</button>
+
+  {% if has_data %}
+  <div class="existing">
+    Data from a previous fetch is available.
+    <a href="/dashboard">Open the dashboard &rarr;</a>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+const form = document.getElementById("fetchForm");
+const statusEl = document.getElementById("status");
+const submitBtn = document.getElementById("submitBtn");
+
+function toISO(localValue){
+  if(!localValue) return "";
+  // datetime-local has no timezone; treat the typed value as UTC to keep
+  // the fetch script's "Z" contract simple.
+  return localValue + ":00Z";
+}
+
+function showStatus(cls, html){
+  statusEl.className = "status show" + (cls ? " " + cls : "");
+  statusEl.innerHTML = html;
+}
+
+function poll(jobId){
+  fetch("/fetch/" + jobId).then(r => r.json()).then(job => {
+    if (job.error){
+      showStatus("error", "<b>Failed:</b> " + job.detail);
+      submitBtn.disabled = false;
+      return;
+    }
+    showStatus("", `<span class="spinner"></span><span class="stage">${job.stage}</span> &middot; ${job.detail || ""}`);
+    if (job.done){
+      showStatus("done", "Done. Redirecting to the dashboard &hellip;");
+      setTimeout(() => location.href = "/dashboard", 700);
+      return;
+    }
+    setTimeout(() => poll(jobId), 900);
+  });
+}
+
+form.addEventListener("submit", ev => {
+  ev.preventDefault();
+  submitBtn.disabled = true;
+  const data = new FormData(form);
+  const start = toISO(data.get("start_local"));
+  const end = toISO(data.get("end_local"));
+  if (start) data.set("start", start);
+  if (end) data.set("end", end);
+
+  showStatus("", '<span class="spinner"></span>Starting &hellip;');
+  fetch("/fetch", {method:"POST", body:data})
+    .then(r => r.json())
+    .then(resp => {
+      if (resp.error){ showStatus("error", resp.error); submitBtn.disabled = false; return; }
+      poll(resp.job_id);
+    })
+    .catch(e => { showStatus("error", "Request failed: " + e); submitBtn.disabled = false; });
+});
+
+document.getElementById("sampleBtn").addEventListener("click", () => {
+  showStatus("", '<span class="spinner"></span>Loading sample data &hellip;');
+  fetch("/api/sample", {method:"POST"})
+    .then(r => r.json())
+    .then(() => location.href = "/dashboard")
+    .catch(e => showStatus("error", "Could not load sample: " + e));
+});
+</script>
+</body>
+</html>
